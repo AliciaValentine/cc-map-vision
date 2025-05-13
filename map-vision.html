@@ -33,6 +33,10 @@
 
 let mapImage = new Image();
 let imageLoaded = false;
+let wallPixels = [];
+let mapScale = 1;
+let offsetX = 0;
+let offsetY = 0;
 
 fileInput.addEventListener('change', e => {
   const file = e.target.files[0];
@@ -41,6 +45,7 @@ fileInput.addEventListener('change', e => {
   reader.onload = function(event) {
     mapImage.onload = function() {
       imageLoaded = true;
+      detectWalls();
       draw();
     };
     mapImage.src = event.target.result;
@@ -48,20 +53,51 @@ fileInput.addEventListener('change', e => {
   reader.readAsDataURL(file);
 });
 
+function detectWalls() {
+  // 一時キャンバスで画像ピクセルを取得
+  const tempCanvas = document.createElement('canvas');
+  const tempCtx = tempCanvas.getContext('2d');
+  tempCanvas.width = mapImage.width;
+  tempCanvas.height = mapImage.height;
+  tempCtx.drawImage(mapImage, 0, 0);
+  const imageData = tempCtx.getImageData(0, 0, mapImage.width, mapImage.height);
+  const data = imageData.data;
+  wallPixels = [];
+
+  for (let y = 0; y < mapImage.height; y++) {
+    for (let x = 0; x < mapImage.width; x++) {
+      const i = (y * mapImage.width + x) * 4;
+      const r = data[i], g = data[i + 1], b = data[i + 2];
+      if (r === 0 && g === 0 && b === 0) {
+        wallPixels.push({ x, y });
+      }
+    }
+  }
+}
+
 function draw() {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   if (imageLoaded) {
-    // 画像を中央に配置
-    const scale = Math.min(
+    mapScale = Math.min(
       canvas.width / mapImage.width,
       canvas.height / mapImage.height
     );
-    const imgW = mapImage.width * scale;
-    const imgH = mapImage.height * scale;
-    const offsetX = (canvas.width - imgW) / 2;
-    const offsetY = (canvas.height - imgH) / 2;
+    const imgW = mapImage.width * mapScale;
+    const imgH = mapImage.height * mapScale;
+    offsetX = (canvas.width - imgW) / 2;
+    offsetY = (canvas.height - imgH) / 2;
     ctx.drawImage(mapImage, offsetX, offsetY, imgW, imgH);
-    // 今後ここに壁認識やオブジェクト配置を追加
+
+    // 壁の描画
+    ctx.fillStyle = 'rgba(255, 0, 0, 0.5)';
+    wallPixels.forEach(p => {
+      ctx.fillRect(
+        offsetX + p.x * mapScale,
+        offsetY + p.y * mapScale,
+        mapScale,
+        mapScale
+      );
+    });
   }
 }
 
