@@ -1,14 +1,18 @@
 <!DOCTYPE html><html lang="ja">
 <head>
   <meta charset="UTF-8">
-  <title>視線シミュレータ</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>クリスタルコンフリクトマップビューア</title>
   <style>
-    body {
+    html, body {
       margin: 0;
+      padding: 0;
       overflow: hidden;
+      background: #222;
     }
     canvas {
       display: block;
+      background: #000;
     }
     #fileInput {
       position: absolute;
@@ -20,64 +24,52 @@
 </head>
 <body>
   <input type="file" id="fileInput" accept="image/png">
-  <script src="https://cdn.jsdelivr.net/npm/p5@1.9.0/lib/p5.min.js"></script>
+  <canvas id="mapCanvas"></canvas>
   <script>
-    // 初期定義
-    let img;
-    let walls = [];
-    let crystalDiameter = 5; // m
-    let scale = 1; // pixel/mのスケールを決める
-    let player = { x: 100, y: 100, radius: 1 }; // m// ファイル選択時に画像を読み込む
-document.getElementById('fileInput').addEventListener('change', e => {
+    const canvas = document.getElementById('mapCanvas');
+    const ctx = canvas.getContext('2d');
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;const fileInput = document.getElementById('fileInput');
+
+let mapImage = new Image();
+let imageLoaded = false;
+
+fileInput.addEventListener('change', e => {
   const file = e.target.files[0];
-  if (file) {
-    const reader = new FileReader();
-    reader.onload = function (event) {
-      img = loadImage(event.target.result, () => {
-        createCanvas(img.width, img.height);
-        detectWalls();
-      });
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = function(event) {
+    mapImage.onload = function() {
+      imageLoaded = true;
+      draw();
     };
-    reader.readAsDataURL(file);
-  }
+    mapImage.src = event.target.result;
+  };
+  reader.readAsDataURL(file);
 });
 
-function setup() {
-  createCanvas(windowWidth, windowHeight);
-}
-
 function draw() {
-  if (!img) return;
-  background(255);
-  image(img, 0, 0);
-
-  // 壁の描画
-  stroke(0);
-  walls.forEach(w => point(w.x, w.y));
-
-  // プレイヤーの描画
-  fill(0, 0, 255);
-  noStroke();
-  ellipse(player.x, player.y, player.radius * 2 * scale);
-}
-
-// 簡易壁検出：完全な黒 (0,0,0) のピクセルのみを壁とする
-function detectWalls() {
-  walls = [];
-  img.loadPixels();
-  for (let x = 0; x < img.width; x++) {
-    for (let y = 0; y < img.height; y++) {
-      let idx = 4 * (x + y * img.width);
-      let r = img.pixels[idx];
-      let g = img.pixels[idx + 1];
-      let b = img.pixels[idx + 2];
-      if (r === 0 && g === 0 && b === 0) {
-        walls.push({ x, y });
-      }
-    }
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  if (imageLoaded) {
+    // 画像を中央に配置
+    const scale = Math.min(
+      canvas.width / mapImage.width,
+      canvas.height / mapImage.height
+    );
+    const imgW = mapImage.width * scale;
+    const imgH = mapImage.height * scale;
+    const offsetX = (canvas.width - imgW) / 2;
+    const offsetY = (canvas.height - imgH) / 2;
+    ctx.drawImage(mapImage, offsetX, offsetY, imgW, imgH);
+    // 今後ここに壁認識やオブジェクト配置を追加
   }
-  console.log(`壁ピクセル数: ${walls.length}`);
 }
+
+window.addEventListener('resize', () => {
+  canvas.width = window.innerWidth;
+  canvas.height = window.innerHeight;
+  draw();
+});
 
   </script>
 </body>
