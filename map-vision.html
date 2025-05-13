@@ -1,0 +1,84 @@
+<!DOCTYPE html><html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>視線シミュレータ</title>
+  <style>
+    body {
+      margin: 0;
+      overflow: hidden;
+    }
+    canvas {
+      display: block;
+    }
+    #fileInput {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      z-index: 10;
+    }
+  </style>
+</head>
+<body>
+  <input type="file" id="fileInput" accept="image/png">
+  <script src="https://cdn.jsdelivr.net/npm/p5@1.9.0/lib/p5.min.js"></script>
+  <script>
+    // 初期定義
+    let img;
+    let walls = [];
+    let crystalDiameter = 5; // m
+    let scale = 1; // pixel/mのスケールを決める
+    let player = { x: 100, y: 100, radius: 1 }; // m// ファイル選択時に画像を読み込む
+document.getElementById('fileInput').addEventListener('change', e => {
+  const file = e.target.files[0];
+  if (file) {
+    const reader = new FileReader();
+    reader.onload = function (event) {
+      img = loadImage(event.target.result, () => {
+        createCanvas(img.width, img.height);
+        detectWalls();
+      });
+    };
+    reader.readAsDataURL(file);
+  }
+});
+
+function setup() {
+  createCanvas(windowWidth, windowHeight);
+}
+
+function draw() {
+  if (!img) return;
+  background(255);
+  image(img, 0, 0);
+
+  // 壁の描画
+  stroke(0);
+  walls.forEach(w => point(w.x, w.y));
+
+  // プレイヤーの描画
+  fill(0, 0, 255);
+  noStroke();
+  ellipse(player.x, player.y, player.radius * 2 * scale);
+}
+
+// 簡易壁検出：完全な黒 (0,0,0) のピクセルのみを壁とする
+function detectWalls() {
+  walls = [];
+  img.loadPixels();
+  for (let x = 0; x < img.width; x++) {
+    for (let y = 0; y < img.height; y++) {
+      let idx = 4 * (x + y * img.width);
+      let r = img.pixels[idx];
+      let g = img.pixels[idx + 1];
+      let b = img.pixels[idx + 2];
+      if (r === 0 && g === 0 && b === 0) {
+        walls.push({ x, y });
+      }
+    }
+  }
+  console.log(`壁ピクセル数: ${walls.length}`);
+}
+
+  </script>
+</body>
+</html>
