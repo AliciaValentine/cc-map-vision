@@ -2,21 +2,21 @@
 <html lang="ja">
 <head>
   <meta charset="UTF-8" />
-  <title>マップ上の壁（黒線）表示</title>
+  <title>マップの壁（黒線）を抽出して赤線で表示</title>
   <style>
     body {
       font-family: sans-serif;
       text-align: center;
-      background: #f9f9f9;
+      background-color: #f4f4f4;
     }
     canvas {
-      margin-top: 1em;
-      border: 1px solid #ccc;
+      margin-top: 10px;
+      border: 1px solid #999;
     }
   </style>
 </head>
 <body>
-  <h1>マップ画像から壁（黒線）を抽出して表示</h1>
+  <h1>マップ画像から黒線（壁）を抽出して赤線で描画</h1>
   <input type="file" id="imageLoader" name="imageLoader" accept="image/*" />
   <br />
   <canvas id="originalCanvas"></canvas>
@@ -36,40 +36,37 @@
       reader.onload = function(event) {
         const img = new Image();
         img.onload = function() {
-          originalCanvas.width = img.width;
-          originalCanvas.height = img.height;
-          wallsCanvas.width = img.width;
-          wallsCanvas.height = img.height;
+          const width = img.width;
+          const height = img.height;
+          originalCanvas.width = wallsCanvas.width = width;
+          originalCanvas.height = wallsCanvas.height = height;
 
-          // 元画像描画
+          // 元画像の描画
           originalCtx.drawImage(img, 0, 0);
 
-          // 画像データ取得
-          const imageData = originalCtx.getImageData(0, 0, img.width, img.height);
+          // ピクセルデータの取得
+          const imageData = originalCtx.getImageData(0, 0, width, height);
           const data = imageData.data;
 
-          // 壁のみを抽出（黒に近い色を検出）
-          const wallImage = wallsCtx.createImageData(img.width, img.height);
-          const wallData = wallImage.data;
+          // 壁キャンバスの初期化
+          wallsCtx.clearRect(0, 0, width, height);
+          wallsCtx.fillStyle = "red"; // 赤線で描画
 
-          for (let i = 0; i < data.length; i += 4) {
-            const r = data[i];
-            const g = data[i + 1];
-            const b = data[i + 2];
-            const a = data[i + 3];
+          // 黒線（壁）を検出して赤で1px塗る
+          for (let y = 0; y < height; y++) {
+            for (let x = 0; x < width; x++) {
+              const index = (y * width + x) * 4;
+              const r = data[index];
+              const g = data[index + 1];
+              const b = data[index + 2];
+              const a = data[index + 3];
 
-            // 黒線の条件（明度の低い色：黒に近い）
-            if (r < 40 && g < 40 && b < 40 && a > 100) {
-              wallData[i] = 255;     // 赤
-              wallData[i + 1] = 0;   // 緑
-              wallData[i + 2] = 0;   // 青
-              wallData[i + 3] = 180; // 半透明赤
-            } else {
-              wallData[i + 3] = 0;   // 完全透明
+              // 黒に近いピクセル（しきい値はRGB全て40未満）
+              if (r < 40 && g < 40 && b < 40 && a > 100) {
+                wallsCtx.fillRect(x, y, 1, 1); // 1ピクセルの赤い四角を描画
+              }
             }
           }
-
-          wallsCtx.putImageData(wallImage, 0, 0);
         };
         img.src = event.target.result;
       };
