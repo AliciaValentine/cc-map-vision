@@ -1,0 +1,37 @@
+[
+ {
+  "slug": "palaistra",
+  "name": "パライストラ",
+  "file": "palaistra.json"
+ },
+ {
+  "slug": "volcanic-heart",
+  "name": "ヴォルカニック・ハート",
+  "file": "volcanic-heart.json"
+ },
+ {
+  "slug": "cloud-nine",
+  "name": "クラウドナイン",
+  "file": "cloud-nine.json"
+ },
+ {
+  "slug": "clockwork",
+  "name": "東方絡繰御殿",
+  "file": "clockwork.json"
+ },
+ {
+  "slug": "red-sands",
+  "name": "レッド・サンズ",
+  "file": "red-sands.json"
+ },
+ {
+  "slug": "bayside",
+  "name": "ベイサイド・バトルグラウンド",
+  "file": "bayside.json"
+ },
+ {
+  "slug": "harmonia",
+  "name": "ハルモニア戦争図書館",
+  "file": "harmonia.json"
+ }
+]

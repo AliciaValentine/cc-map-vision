@@ -1,0 +1,352 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>クリコン盤面</title>
+<style>
+  :root { --bg:#f3f1ec; --fg:#222; --panel:#fff; --line:#bbb; --out:#e2e2e2; --floor:#fff; --wall:#d0d0d0; --ink:#141414;
+          --own:#bee1f5; --opp:#f6cdcd; --blue:#2a5bd7; --green:#169247; --red:#d63030; }
+  * { box-sizing:border-box; }
+  html, body { margin:0; height:100%; background:var(--bg); color:var(--fg);
+               font:15px/1.4 system-ui, -apple-system, "Hiragino Sans", "Meiryo", sans-serif; }
+  #wrap { max-width:900px; margin:0 auto; padding:6px 8px 12px; display:flex; flex-direction:column; gap:6px; }
+  .row { display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
+  select, button, input { font:inherit; }
+  select { flex:1; min-width:0; padding:6px; border-radius:8px; border:1px solid var(--line); background:var(--panel); color:var(--fg); }
+  button { min-height:44px; padding:0 12px; border-radius:10px; border:1px solid var(--line); background:var(--panel); color:var(--fg); touch-action:manipulation; }
+  .steps { display:flex; gap:6px; }
+  .steps button { flex:1 1 0; min-width:0; padding:0; }
+  #prog { flex:1; min-width:0; }
+  #progv { width:5.5em; text-align:right; font-variant-numeric:tabular-nums; }
+  #board { width:100%; height:62vh; min-height:300px; background:var(--out); border-radius:10px; touch-action:none; display:block; user-select:none; -webkit-user-select:none; }
+  #msg { font-size:13px; min-height:1.4em; opacity:.8; }
+  [hidden] { display:none !important; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div class="row">
+    <select id="mapsel" aria-label="面"></select>
+    <button id="place">配置</button>
+  </div>
+  <div class="row" id="editbar" hidden>
+    <button id="square">直角に揃える</button>
+    <button id="undo" disabled>取り消し</button>
+    <button id="snap" aria-pressed="true">吸着：入</button>
+    <button id="export">JSON を書き出す</button>
+  </div>
+  <svg id="board" xmlns="http://www.w3.org/2000/svg"></svg>
+  <div class="row">
+    <input id="prog" type="range" min="-100" max="100" step="0.01" value="0" aria-label="進行度">
+    <span id="progv"></span>
+  </div>
+  <div class="steps">
+    <button data-d="-5">−5</button><button data-d="-1">−1</button><button data-d="1">+1</button><button data-d="5">+5</button>
+  </div>
+  <div id="msg"></div>
+</div>
+<script src="geom.js"></script>
+<script>
+"use strict";
+const NS = "http://www.w3.org/2000/svg";
+const $ = (id) => document.getElementById(id);
+const svg = $("board");
+const COLORS = ["var(--blue)", "var(--green)", "var(--green)", "var(--green)", "var(--green)",
+                "var(--red)", "var(--red)", "var(--red)", "var(--red)", "var(--red)"];
+const LABELS = ["1", "2", "3", "4", "5", "1", "2", "3", "4", "5"];   // 自分（青）1、味方（緑）2〜5、敵（赤）1〜5
+const VIEW = 25, CRYSTAL_R = 5, PIECE_R = 1, TOUCH_PX = 22;
+const S = { list: [], slug: null, map: null, p: 0, pts: null, sel: -1, vb: null,
+            edit: new URLSearchParams(location.search).get("edit") === "1", editRing: 0, snap: true, undo: null };
+
+const el = (tag, attrs, parent) => {
+  const e = document.createElementNS(NS, tag);
+  for (const k in attrs) e.setAttribute(k, attrs[k]);
+  if (parent) parent.appendChild(e);
+  return e;
+};
+const pathOf = (ring) => "M" + ring.map(([x, z]) => `${x} ${z}`).join("L") + "Z";
+
+// 画面の層：床の白 → 視界の塗り（円の灰、見える所の色）→ 通り道の帯と壁 → 菱形 → クリスタル → 視界の円と線 → 丸
+const defs = el("defs", {}, svg);
+const clip = el("clipPath", { id: "viewclip" }, defs), clipCircle = el("circle", { r: 0 }, clip);
+const floorClip = el("path", {}, el("clipPath", { id: "floorclip" }, defs));
+const gFloor = el("g", {}, svg), gFill = el("g", { "clip-path": "url(#floorclip)" }, el("g", { "clip-path": "url(#viewclip)" }, svg));
+const gMap = el("g", {}, svg), gLane = el("g", {}, svg), gCrystal = el("g", {}, svg), gSight = el("g", {}, svg), gPieces = el("g", {}, svg);
+const gEdit = el("g", {}, svg);   // 編集モード（?edit=1）の頂点と辺の中点
+
+async function loadList() {
+  S.list = await (await fetch("maps/index.json")).json();
+  for (const e of S.list) { const o = document.createElement("option"); o.value = e.slug; o.textContent = e.name; $("mapsel").appendChild(o); }
+}
+
+async function loadMap(slug) {
+  const e = S.list.find((x) => x.slug === slug);
+  S.slug = slug;
+  S.map = await (await fetch("maps/" + e.file)).json();
+  $("mapsel").value = slug;
+  drawMap();
+  fitView();
+}
+
+function drawMap() {
+  gFloor.replaceChildren(); gMap.replaceChildren(); gLane.replaceChildren();
+  // 見本の描き方：場外は薄い灰、床は白、通り道は帯（自陣側 = 進行度が負の側を水色、相手側を薄い赤）、
+  // 壁は薄い灰の塗りと細い黒の輪郭、中央と ±50 と ±100 に菱形
+  const ink = { stroke: "var(--ink)", "stroke-width": 1, "vector-effect": "non-scaling-stroke" };
+  el("path", { d: pathOf(S.map.floor), fill: "var(--floor)" }, gFloor);
+  floorClip.setAttribute("d", pathOf(S.map.floor));   // 視界の塗りは床の上だけ
+  for (const [keep, col] of [[(p) => p <= 0, "var(--own)"], [(p) => p >= 0, "var(--opp)"]])
+    el("polyline", { points: S.map.lane.filter(([, , p]) => keep(p)).map(([x, z]) => `${x},${z}`).join(" "), fill: "none",
+                     stroke: col, "stroke-width": 3, "stroke-linejoin": "round", "stroke-linecap": "round" }, gMap);
+  for (const w of S.map.walls) el("path", { d: pathOf(w), fill: "var(--wall)", ...ink }, gMap);
+  el("path", { d: pathOf(S.map.floor), fill: "none", ...ink }, gMap);
+  for (const [p, r] of [[0, 1.6], [50, 1.1], [-50, 1.1], [100, 1.6], [-100, 1.6]]) {
+    const c = Geom.laneAt(S.map.lane, p);
+    el("path", { d: `M${c.x} ${c.z - r}L${c.x + r * 0.7} ${c.z}L${c.x} ${c.z + r}L${c.x - r * 0.7} ${c.z}Z`, fill: "#fff", ...ink }, gLane);
+  }
+  drawEdit();
+}
+
+// 編集モード：外周（0）と壁（1〜）の頂点を赤い点、辺の中点を灰の点で出す。点はドラッグで動き（吸着が入なら隣か格子に寄る）、
+// 中点を押すと頂点を足し、頂点を押すとその多角形を選び（青い点）、二度押すと消す（輪は 3 点まで）。通常の表示では何も出ない
+const rings = () => [S.map.floor, ...S.map.walls];
+function drawEdit() {
+  gEdit.replaceChildren();
+  if (!S.edit || !S.map || !S.vb) return;
+  const r = 5 / pxPerM(), rm = 3.5 / pxPerM();
+  rings().forEach((ring, ri) => ring.forEach(([x, z], vi) => {
+    const [nx, nz] = ring[(vi + 1) % ring.length];
+    el("circle", { cx: (x + nx) / 2, cy: (z + nz) / 2, r: rm, fill: "#999", "data-m": `${ri},${vi}` }, gEdit);
+    el("circle", { cx: x, cy: z, r, fill: ri === S.editRing ? "#cfe3ff" : "#fff", stroke: ri === S.editRing ? "#1a50c8" : "#d00",
+                   "stroke-width": 1.5, "vector-effect": "non-scaling-stroke", "data-v": `${ri},${vi}` }, gEdit);
+  }));
+}
+
+// 取り消しは一段だけ：変える直前の外周と壁を写しておく
+function remember() {
+  S.undo = JSON.stringify({ floor: S.map.floor, walls: S.map.walls });
+  $("undo").disabled = false;
+}
+function undo() {
+  if (!S.undo) return;
+  const u = JSON.parse(S.undo);
+  S.map.floor = u.floor; S.map.walls = u.walls; S.undo = null;
+  $("undo").disabled = true;
+  if (S.editRing >= rings().length) S.editRing = 0;
+  drawMap(); drawPieces();
+}
+// 選んだ多角形（未選択なら外周）に、変換の道具と同じ直線化を掛ける
+function squareRing() {
+  remember();
+  const r = Geom.prune(Geom.straighten(rings()[S.editRing]));
+  if (S.editRing === 0) S.map.floor = r; else S.map.walls[S.editRing - 1] = r;
+  drawMap(); drawPieces();
+}
+
+function exportJson() {
+  const r1 = (v) => Math.round(v * 10) / 10;
+  const ring = (rg) => Geom.prune(rg.map(([x, z]) => [r1(x), r1(z)]));   // 直線の途中と重なった頂点を落としてから書く
+  const data = { name: S.map.name, floor: ring(S.map.floor), walls: S.map.walls.map(ring), lane: S.map.lane };
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([JSON.stringify(data)], { type: "application/json" }));
+  a.download = S.list.find((x) => x.slug === S.slug).file;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
+// 面の全体が収まる表示。縦長の画面（スマートフォンの縦）では面の高さに合わせ、横はクリスタルを中心に切り出す
+function fitView() {
+  const xs = S.map.floor.map((p) => p[0]), zs = S.map.floor.map((p) => p[1]);
+  const m = 3, x0 = Math.min(...xs) - m, z0 = Math.min(...zs) - m, w = Math.max(...xs) - x0 + m, h = Math.max(...zs) - z0 + m;
+  const r = svg.getBoundingClientRect(), aspect = r.height / Math.max(1, r.width);
+  if (aspect > h / w) {
+    const vw = h / aspect, c = S.map ? crystal() : { x: x0 + w / 2 };
+    S.vb = { x: Math.max(x0, Math.min(x0 + w - vw, c.x - vw / 2)), y: z0, w: vw, h };
+  } else S.vb = { x: x0, y: z0, w, h };
+  applyView();
+}
+function applyView() { svg.setAttribute("viewBox", `${S.vb.x} ${S.vb.y} ${S.vb.w} ${S.vb.h}`); drawPieces(); drawEdit(); }
+const pxPerM = () => { const r = svg.getBoundingClientRect(); return Math.min(r.width / S.vb.w, r.height / S.vb.h); };
+function toWorld(cx, cy) {
+  const pt = svg.createSVGPoint(); pt.x = cx; pt.y = cy;
+  const w = pt.matrixTransform(svg.getScreenCTM().inverse());
+  return [w.x, w.y];
+}
+
+function crystal() { return Geom.laneAt(S.map.lane, S.p); }
+
+function drawCrystal() {
+  const c = crystal();
+  gCrystal.replaceChildren();
+  el("circle", { cx: c.x, cy: c.z, r: CRYSTAL_R, fill: "rgba(80,170,230,.12)", stroke: "#3a8fc4", "stroke-width": 0.25 }, gCrystal);
+  const d = 1.4;
+  el("path", { d: `M${c.x} ${c.z - d}L${c.x + d * 0.7} ${c.z}L${c.x} ${c.z + d}L${c.x - d * 0.7} ${c.z}Z`, fill: "#5ab8ec", stroke: "#1d6f9e", "stroke-width": 0.2 }, gCrystal);
+  $("prog").value = S.p;
+  $("progv").textContent = S.p.toFixed(2);
+}
+
+function drawPieces() {
+  if (!S.pts) return;
+  gPieces.replaceChildren(); gSight.replaceChildren(); gFill.replaceChildren();
+  const hitR = Math.max(PIECE_R, TOUCH_PX / pxPerM());
+  if (S.sel >= 0) {
+    const [sx, sz] = S.pts[S.sel];
+    // 視界の塗り：25 m の円の中を灰（0.09）に、選んだ丸から見える所をその丸の色（0.15）に。円と床で切り抜く。
+    // 明るさは 壁 #d0d0d0（208）< 場外 #e2e2e2（226）< 見えない床（約 244）の順
+    clipCircle.setAttribute("cx", sx); clipCircle.setAttribute("cy", sz); clipCircle.setAttribute("r", VIEW);
+    el("circle", { cx: sx, cy: sz, r: VIEW, fill: "#808080", opacity: 0.09 }, gFill);
+    el("path", { d: pathOf(Geom.visibility([sx, sz], S.map, VIEW)), fill: COLORS[S.sel], opacity: 0.15 }, gFill);
+    el("circle", { cx: sx, cy: sz, r: VIEW, fill: "none", stroke: COLORS[S.sel], "stroke-width": 0.25, "stroke-dasharray": "1 0.6" }, gSight);
+    const mySide = S.sel < 5;
+    S.pts.forEach(([x, z], i) => {
+      if (i === S.sel) return;
+      const far = Math.hypot(x - sx, z - sz) > VIEW, cut = Geom.blocked([x, z], [sx, sz], S.map);
+      el("line", { x1: x, y1: z, x2: sx, y2: sz, stroke: COLORS[i], "stroke-width": (i < 5) === mySide ? 0.2 : 0.3,
+                   "stroke-dasharray": cut ? "0.8 0.6" : "none", opacity: far ? 0.3 : 0.9 }, gSight);
+    });
+  }
+  S.pts.forEach(([x, z], i) => {
+    const g = el("g", { "data-i": i }, gPieces);
+    el("circle", { cx: x, cy: z, r: PIECE_R, fill: COLORS[i], stroke: i === S.sel ? "#000" : "#fff", "stroke-width": i === S.sel ? 0.35 : 0.2 }, g);
+    const t = el("text", { x, y: z + 0.42, "text-anchor": "middle", "font-size": 1.2, fill: "#fff", "font-weight": 700, "pointer-events": "none" }, g);
+    t.textContent = LABELS[i];
+    el("circle", { cx: x, cy: z, r: hitR, fill: "transparent" }, g);
+  });
+}
+
+function redraw() { drawCrystal(); drawPieces(); saveUrl(); }
+
+let urlTimer = null;
+function saveUrl() {
+  clearTimeout(urlTimer);
+  urlTimer = setTimeout(() => {
+    const q = Geom.encodeState({ m: S.slug, p: S.p, pts: S.pts, s: S.sel });
+    history.replaceState(null, "", "?" + q + (S.edit ? "&edit=1" : ""));
+  }, 150);
+}
+
+function place() { S.pts = Geom.placeTeams(S.map, crystal()); S.sel = -1; redraw(); }
+function setProg(v) { S.p = Math.round(Math.max(-100, Math.min(100, v)) * 100) / 100; redraw(); }
+
+// 操作：丸はドラッグで動かし（離したら壁の外へ戻す）、動かさずに離せば選択の切り替え。背景のドラッグで移動、
+// 二本指で拡大、背景を押して離せば選択を外す。PC はホイールで拡大
+const ptrs = new Map();
+let act = null, lastTap = {};
+svg.addEventListener("pointerdown", (e) => {
+  try { svg.setPointerCapture(e.pointerId); } catch { /* 捕まえられない指でも動かす */ }
+  ptrs.set(e.pointerId, [e.clientX, e.clientY]);
+  if (ptrs.size === 2) {
+    const [a, b] = [...ptrs.values()];
+    act = { kind: "pinch", d: Math.hypot(a[0] - b[0], a[1] - b[1]), vb: { ...S.vb }, mid: toWorld((a[0] + b[0]) / 2, (a[1] + b[1]) / 2) };
+    return;
+  }
+  const v = e.target.closest("[data-v]"), mid = e.target.closest("[data-m]");
+  if (v || mid) {
+    let [ri, vi] = (v || mid).getAttribute(v ? "data-v" : "data-m").split(",").map(Number);
+    if (mid) {   // 中点を押すと、その辺に頂点を足してそのまま動かせる
+      remember();
+      const ring = rings()[ri], a = ring[vi], b = ring[(vi + 1) % ring.length];
+      ring.splice(vi + 1, 0, [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2]);
+      vi += 1;
+      drawMap();
+    }
+    act = { kind: "vert", ri, vi, x: e.clientX, y: e.clientY, moved: !!mid, saved: !!mid };
+    return;
+  }
+  const g = e.target.closest("g[data-i]");
+  act = g ? { kind: "piece", i: +g.dataset.i, x: e.clientX, y: e.clientY, moved: false }
+          : { kind: "pan", x: e.clientX, y: e.clientY, vb: { ...S.vb }, moved: false };
+});
+svg.addEventListener("pointermove", (e) => {
+  if (!ptrs.has(e.pointerId) || !act) return;
+  ptrs.set(e.pointerId, [e.clientX, e.clientY]);
+  if (act.kind === "pinch" && ptrs.size === 2) {
+    const [a, b] = [...ptrs.values()];
+    const k = act.d / Math.max(1, Math.hypot(a[0] - b[0], a[1] - b[1]));
+    const w = Math.max(8, Math.min(400, act.vb.w * k)), h = act.vb.h * (w / act.vb.w);
+    const [mx, mz] = act.mid;
+    S.vb = { x: mx - (mx - act.vb.x) * (w / act.vb.w), y: mz - (mz - act.vb.y) * (h / act.vb.h), w, h };
+    applyView();
+    return;
+  }
+  const dist = Math.hypot(e.clientX - act.x, e.clientY - act.y);
+  if (dist > 4) act.moved = true;
+  if (act.kind === "vert" && act.moved) {
+    if (!act.saved) { remember(); act.saved = true; }
+    // 吸着：前後の頂点と x か z が 0.3 m 以内なら揃え（直角の角）、ほかは 0.5 m の格子に寄せる
+    const ring = rings()[act.ri], n = ring.length, w = toWorld(e.clientX, e.clientY);
+    ring[act.vi] = S.snap ? Geom.snapVertex(w, ring[(act.vi - 1 + n) % n], ring[(act.vi + 1) % n]) : w;
+    drawMap();
+  } else if (act.kind === "piece" && act.moved) {
+    S.pts[act.i] = toWorld(e.clientX, e.clientY);
+    drawPieces();
+  } else if (act.kind === "pan" && act.moved) {
+    const k = 1 / pxPerM();
+    S.vb = { ...act.vb, x: act.vb.x - (e.clientX - act.x) * k, y: act.vb.y - (e.clientY - act.y) * k };
+    applyView();
+  }
+});
+const end = (e) => {
+  ptrs.delete(e.pointerId);
+  if (!act) return;
+  if (act.kind === "vert" && !act.moved) {   // 押すとその多角形を選ぶ。同じ頂点を 0.4 秒以内に二度押すと消す
+    const now = Date.now(), key = `${act.ri},${act.vi}`, ring = rings()[act.ri];
+    S.editRing = act.ri;
+    if (lastTap.key === key && now - lastTap.t < 400 && ring.length > 3) { remember(); ring.splice(act.vi, 1); lastTap = {}; }
+    else lastTap = { key, t: now };
+    drawMap();
+  }
+  if (act.kind === "vert" && act.moved) {   // 離した時点で、前後と一直線になった頂点を落とす（取り消しで戻せる）
+    const pr = Geom.prune(rings()[act.ri]);
+    if (act.ri === 0) S.map.floor = pr; else S.map.walls[act.ri - 1] = pr;
+    drawMap();
+  }
+  if (act.kind === "vert") drawPieces();
+  if (act.kind === "piece") {
+    if (act.moved) S.pts[act.i] = Geom.pushOut(S.pts[act.i], S.map);
+    else S.sel = S.sel === act.i ? -1 : act.i;
+    redraw();
+  } else if (act.kind === "pan" && !act.moved) { S.sel = -1; redraw(); }
+  if (act.kind !== "pinch" || ptrs.size === 0) act = null;
+};
+svg.addEventListener("pointerup", end);
+svg.addEventListener("pointercancel", end);
+svg.addEventListener("wheel", (e) => {
+  e.preventDefault();
+  const k = Math.exp(e.deltaY * 0.0015), [mx, mz] = toWorld(e.clientX, e.clientY);
+  const w = Math.max(8, Math.min(400, S.vb.w * k)), r = w / S.vb.w;
+  S.vb = { x: mx - (mx - S.vb.x) * r, y: mz - (mz - S.vb.y) * r, w, h: S.vb.h * r };
+  applyView();
+}, { passive: false });
+window.addEventListener("resize", () => S.map && drawPieces());
+
+$("prog").addEventListener("input", (e) => setProg(+e.target.value));
+document.querySelectorAll("button[data-d]").forEach((b) => b.addEventListener("click", () => setProg(S.p + +b.dataset.d)));
+$("place").addEventListener("click", place);
+$("export").addEventListener("click", exportJson);
+$("square").addEventListener("click", squareRing);
+$("undo").addEventListener("click", undo);
+$("snap").addEventListener("click", () => {
+  S.snap = !S.snap;
+  $("snap").textContent = `吸着：${S.snap ? "入" : "切"}`;
+  $("snap").setAttribute("aria-pressed", String(S.snap));
+});
+if (S.edit) $("editbar").hidden = false;
+$("mapsel").addEventListener("change", async (e) => { S.p = 0; await loadMap(e.target.value); place(); });
+
+(async () => {
+  try {
+    await loadList();
+    const st = Geom.parseState(location.search.slice(1), { maps: S.list.map((e) => e.slug), m: S.list[0].slug, p: 0 });
+    await loadMap(st.m);
+    S.p = st.p;
+    fitView();
+    if (st.pts) { S.pts = st.pts.map((p) => Geom.pushOut(p, S.map)); S.sel = st.s; redraw(); } else place();
+  } catch (err) {
+    $("msg").textContent = "面のデータを読めませんでした（maps/index.json）。";
+  }
+})();
+</script>
+</body>
+</html>
