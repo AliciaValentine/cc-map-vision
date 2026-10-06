@@ -29,6 +29,7 @@
   <div class="row">
     <select id="mapsel" aria-label="面"></select>
     <button id="place">配置</button>
+    <button id="editbtn" aria-pressed="false">編集</button>
   </div>
   <div class="row" id="editbar" hidden>
     <button id="square">直角に揃える</button>
@@ -332,7 +333,14 @@ $("snap").addEventListener("click", () => {
   $("snap").textContent = `吸着：${S.snap ? "入" : "切"}`;
   $("snap").setAttribute("aria-pressed", String(S.snap));
 });
-if (S.edit) $("editbar").hidden = false;
+// 編集モードの出入り：URL の edit=1 でも、上の「編集」ボタンでも入れる。ボタンは再読み込みせずに切り替え、URL の edit=1 も付け外しする
+function showEdit() {
+  $("editbar").hidden = !S.edit;
+  $("editbtn").textContent = S.edit ? "編集を終える" : "編集";
+  $("editbtn").setAttribute("aria-pressed", String(S.edit));
+}
+$("editbtn").addEventListener("click", () => { S.edit = !S.edit; showEdit(); drawEdit(); if (S.pts) saveUrl(); });
+showEdit();
 $("mapsel").addEventListener("change", async (e) => { S.p = 0; await loadMap(e.target.value); place(); });
 
 (async () => {
